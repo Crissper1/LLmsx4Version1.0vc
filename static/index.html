@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-LLM App - Comparador de Respuestas</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .input-section {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .prompt-input {
+            width: 100%;
+            min-height: 100px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+            resize: vertical;
+        }
+        .send-button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 10px;
+        }
+        .send-button:hover {
+            background: #0056b3;
+        }
+        .send-button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        .responses-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 20px;
+        }
+        
+        /* Responsive para pantallas pequeñas */
+        @media (max-width: 768px) {
+            .responses-grid {
+                grid-template-columns: 1fr;
+            }
+            .llm-card {
+                max-height: 400px; /* Altura reducida en móviles */
+            }
+            .response-content {
+                max-height: 300px;
+            }
+        }
+        .llm-card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            max-height: 500px; /* Altura máxima para cada tarjeta */
+        }
+        .llm-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            flex-shrink: 0; /* El header siempre visible */
+        }
+        .llm-name {
+            font-weight: bold;
+            font-size: 18px;
+        }
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            color: white;
+        }
+        .status-idle { background: #6c757d; }
+        .status-loading { background: #ffc107; color: black; }
+        .status-completed { background: #28a745; }
+        .status-error { background: #dc3545; }
+        .response-content {
+            line-height: 1.6;
+            white-space: pre-wrap;
+            overflow-y: auto; /* Barra de desplazamiento vertical */
+            flex-grow: 1; /* Ocupa el espacio restante */
+            padding: 10px;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            background-color: #f8f9fa;
+            max-height: 400px; /* Altura máxima del contenido */
+        }
+        /* Estilo personalizado para la barra de desplazamiento */
+        .response-content::-webkit-scrollbar {
+            width: 8px;
+        }
+        .response-content::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+        .response-content::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 4px;
+        }
+        .response-content::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8;
+        }
+        .copy-button {
+            background: #6c757d;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            margin-top: 10px;
+            align-self: flex-end;
+        }
+        .copy-button:hover {
+            background: #5a6268;
+        }
+        .copy-button:active {
+            background: #28a745;
+        }
+        .clear-button {
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .clear-button:hover {
+            background: #c82333;
+        }
+        .clear-all-button {
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-left: 10px;
+        }
+        .clear-all-button:hover {
+            background: #c82333;
+        }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🤖 Multi-LLM App</h1>
+        <p>Compara respuestas de múltiples modelos de IA con un solo prompt</p>
+    </div>
+
+    <div class="input-section">
+        <textarea 
+            id="promptInput" 
+            class="prompt-input" 
+            placeholder="Escribe tu pregunta o prompt aquí..."
+        ></textarea>
+        <div style="margin: 10px 0;">
+            <label>
+                <input type="checkbox" id="useRealApis" onchange="toggleApiMode()"> 
+                Usar APIs reales (Gemini 2.0 Flash ✅ | Z.AI GLM-4.5-Flash ⚡ | Mistral AI ✅)
+            </label>
+        </div>
+        <button id="sendButton" class="send-button" onclick="sendPrompt()">
+            Enviar a todos los LLMs
+        </button>
+        <button class="clear-all-button" onclick="clearConversation()" title="Limpiar todas las conversaciones">
+            🗑️ Limpiar Todo
+        </button>
+    </div>
+
+    <div id="responsesGrid" class="responses-grid"></div>
+
+    <script>
+        let availableLlms = [];
+        let isLoading = false;
+        let useRealApis = false;
+        let conversationHistories = {}; // Historial de conversación por LLM
+
+        function initializeConversationHistories() {
+            availableLlms.forEach(llm => {
+                if (!conversationHistories[llm.id]) {
+                    conversationHistories[llm.id] = [];
+                }
+            });
+        }
+
+        function clearConversation(llmId) {
+            if (llmId) {
+                // Limpiar conversación de un LLM específico
+                conversationHistories[llmId] = [];
+                const llm = availableLlms.find(l => l.id === llmId);
+                if (llm) {
+                    llm.response = 'Conversación limpiada. ¡Empecemos de nuevo!';
+                    llm.status = 'idle';
+                }
+            } else {
+                // Limpiar todas las conversaciones
+                Object.keys(conversationHistories).forEach(id => {
+                    conversationHistories[id] = [];
+                });
+                availableLlms.forEach(llm => {
+                    llm.response = 'Conversación limpiada. ¡Empecemos de nuevo!';
+                    llm.status = 'idle';
+                });
+            }
+            renderLlmCards();
+        }
+
+        function toggleApiMode() {
+            useRealApis = document.getElementById('useRealApis').checked;
+            const button = document.getElementById('sendButton');
+            if (useRealApis) {
+                button.innerHTML = 'Enviar a Z.AI + Gemini + Mistral (APIs Reales)';
+                button.style.background = '#28a745';
+            } else {
+                button.innerHTML = 'Enviar a todos los LLMs (Simulación)';
+                button.style.background = '#007bff';
+            }
+        }
+
+        // Cargar LLMs disponibles al iniciar
+        async function loadAvailableLlms() {
+            try {
+                const response = await fetch('http://localhost:5000/api/llm/available');
+                const data = await response.json();
+                
+                if (data.success) {
+                    availableLlms = data.llms.map((llm, index) => ({
+                        ...llm,
+                        status: 'idle',
+                        response: '',
+                        color: ['#28a745', '#007bff', '#6f42c1', '#fd7e14'][index % 4]
+                    }));
+                    initializeConversationHistories();
+                    renderLlmCards();
+                }
+            } catch (error) {
+                console.error('Error cargando LLMs:', error);
+                // Fallback con LLMs por defecto
+                availableLlms = [
+                    { id: 'zai', name: 'Z.AI GLM-4.5-Flash', status: 'idle', response: '', color: '#28a745' },
+                    { id: 'gemini', name: 'Google Gemini 2.0 Flash', status: 'idle', response: '', color: '#007bff' },
+                    { id: 'mistral', name: 'Mistral AI', status: 'idle', response: '', color: '#6f42c1' },
+                    { id: 'llama', name: 'Meta Llama', status: 'idle', response: '', color: '#fd7e14' }
+                ];
+                initializeConversationHistories();
+                renderLlmCards();
+            }
+        }
+
+        function renderLlmCards() {
+            const grid = document.getElementById('responsesGrid');
+            grid.innerHTML = '';
+            
+            availableLlms.forEach(llm => {
+                const card = document.createElement('div');
+                card.className = 'llm-card';
+                
+                const conversationLength = conversationHistories[llm.id] ? conversationHistories[llm.id].length : 0;
+                const conversationInfo = conversationLength > 0 ? 
+                    `<small style="color: #666;">💬 ${conversationLength/2} intercambios</small>` : 
+                    '<small style="color: #666;">🆕 Nueva conversación</small>';
+                
+                card.innerHTML = `
+                    <div class="llm-header">
+                        <div>
+                            <div class="llm-name" style="color: ${llm.color}">${llm.name}</div>
+                            ${conversationInfo}
+                        </div>
+                        <div style="display: flex; gap: 5px; align-items: center;">
+                            ${conversationLength > 0 ? 
+                                `<button class="clear-button" onclick="clearConversation('${llm.id}')" title="Limpiar conversación">🗑️</button>` : 
+                                ''
+                            }
+                            <div class="status-badge status-${llm.status}">
+                                ${llm.status === 'loading' ? '<div class="loading"></div>' : llm.status}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="response-content" id="response-${llm.id}">${llm.response || 'Esperando prompt...'}</div>
+                    ${llm.response && llm.status === 'completed' ? 
+                        `<button class="copy-button" onclick="copyResponse('${llm.id}')">📋 Copiar</button>` : 
+                        ''
+                    }
+                `;
+                grid.appendChild(card);
+            });
+        }
+
+        function copyResponse(llmId) {
+            const llm = availableLlms.find(l => l.id === llmId);
+            if (llm && llm.response) {
+                navigator.clipboard.writeText(llm.response).then(() => {
+                    // Cambiar temporalmente el texto del botón
+                    const button = event.target;
+                    const originalText = button.innerHTML;
+                    button.innerHTML = '✅ Copiado';
+                    button.style.background = '#28a745';
+                    setTimeout(() => {
+                        button.innerHTML = originalText;
+                        button.style.background = '#6c757d';
+                    }, 2000);
+                }).catch(err => {
+                    console.error('Error al copiar:', err);
+                    alert('Error al copiar al portapapeles');
+                });
+            }
+        }
+
+        async function sendPrompt() {
+            const prompt = document.getElementById('promptInput').value.trim();
+            if (!prompt) {
+                alert('Por favor, escribe un prompt');
+                return;
+            }
+
+            if (isLoading) return;
+
+            isLoading = true;
+            document.getElementById('sendButton').disabled = true;
+            document.getElementById('sendButton').innerHTML = '<div class="loading"></div> Enviando...';
+
+            // Actualizar estado a loading
+            availableLlms.forEach(llm => {
+                llm.status = 'loading';
+                llm.response = 'Procesando...';
+            });
+            renderLlmCards();
+
+            try {
+                let endpoint, payload;
+                
+                if (useRealApis) {
+                    // Usar Z.AI GLM-4.5-Flash, Gemini y Mistral
+                    endpoint = 'http://localhost:5000/api/llm/query';
+                    payload = {
+                        prompt: prompt,
+                        llms: {
+                            'zai': '3d5148a08e3041dd9dd31617128ea9d3.yoj4647nDm10DAPM',
+                            'gemini': 'AIzaSyDAS0WQ4FicQVZYeG_kY9ADdTJY20HKU7U',
+                            'mistral': '8Sceip3FXhl7m8EwkbIMFB1SFUBMHELM'
+                        },
+                        conversation_histories: conversationHistories
+                    };
+                } else {
+                    // Usar el endpoint de simulación para la demo
+                    endpoint = 'http://localhost:5000/api/llm/simulate';
+                    payload = {
+                        prompt: prompt,
+                        llm_ids: availableLlms.map(llm => llm.id)
+                    };
+                }
+
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    // Actualizar las respuestas y el historial
+                    data.results.forEach(result => {
+                        const llm = availableLlms.find(l => l.id === result.id);
+                        if (llm) {
+                            llm.status = result.status;
+                            llm.response = result.response;
+                            
+                            // Actualizar historial de conversación solo para APIs reales exitosas
+                            if (useRealApis && result.status === 'completed') {
+                                if (!conversationHistories[result.id]) {
+                                    conversationHistories[result.id] = [];
+                                }
+                                
+                                // Agregar el prompt del usuario
+                                conversationHistories[result.id].push({
+                                    role: 'user',
+                                    content: prompt
+                                });
+                                
+                                // Agregar la respuesta del asistente
+                                conversationHistories[result.id].push({
+                                    role: 'assistant',
+                                    content: result.response
+                                });
+                                
+                                // Limitar el historial a los últimos 10 intercambios (20 mensajes)
+                                if (conversationHistories[result.id].length > 20) {
+                                    conversationHistories[result.id] = conversationHistories[result.id].slice(-20);
+                                }
+                            }
+                        }
+                    });
+                    
+                    // Si estamos usando APIs reales, marcar los LLMs no configurados
+                    if (useRealApis) {
+                        const configuredLlms = data.results.map(r => r.id);
+                        availableLlms.forEach(llm => {
+                            if (!configuredLlms.includes(llm.id)) {
+                                llm.status = 'idle';
+                                llm.response = 'API key no configurada - usando simulación';
+                            }
+                        });
+                    }
+                } else {
+                    throw new Error(data.error || 'Error en la respuesta');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                availableLlms.forEach(llm => {
+                    llm.status = 'error';
+                    llm.response = 'Error de conexión con el servidor';
+                });
+            }
+
+            renderLlmCards();
+            isLoading = false;
+            document.getElementById('sendButton').disabled = false;
+            document.getElementById('sendButton').innerHTML = 'Enviar a todos los LLMs';
+        }
+
+        // Inicializar la aplicación
+        loadAvailableLlms();
+    </script>
+</body>
+</html>
