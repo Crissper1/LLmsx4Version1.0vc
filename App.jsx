@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button.jsx'
 import { Textarea } from '@/components/ui/textarea.jsx'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card.jsx'
 import { Badge } from '@/components/ui/badge.jsx'
-import { Copy, Settings, Send, Loader2 } from 'lucide-react'
+import { Copy, Settings, Send, Loader2, MessageSquare, RotateCcw, History } from 'lucide-react'
 import './App.css'
 
 function App() {
@@ -11,10 +11,14 @@ function App() {
   const [isLoading, setIsLoading] = useState(false)
   const [availableLlms, setAvailableLlms] = useState([])
   const [llmResponses, setLlmResponses] = useState([])
+  const [conversationId, setConversationId] = useState(null)
+  const [conversationHistory, setConversationHistory] = useState({})
+  const [showHistory, setShowHistory] = useState(false)
 
   // Cargar LLMs disponibles al iniciar la aplicación
   useEffect(() => {
     fetchAvailableLlms()
+    createNewConversation()
   }, [])
 
   const fetchAvailableLlms = async () => {
@@ -37,22 +41,22 @@ function App() {
       // Fallback a LLMs por defecto si hay error
       const defaultLlms = [
         { 
-          id: 'openai', 
-          name: 'OpenAI GPT-4', 
+          id: 'zai', 
+          name: 'Z.AI GLM-4.5-Flash', 
           status: 'idle', 
           response: '',
           color: 'bg-green-500'
         },
         { 
           id: 'gemini', 
-          name: 'Google Gemini', 
+          name: 'Google Gemini 2.0 Flash', 
           status: 'idle', 
           response: '',
           color: 'bg-blue-500'
         },
         { 
-          id: 'claude', 
-          name: 'Anthropic Claude', 
+          id: 'mistral', 
+          name: 'Mistral AI', 
           status: 'idle', 
           response: '',
           color: 'bg-purple-500'
@@ -70,6 +74,39 @@ function App() {
     }
   }
 
+  const createNewConversation = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/conversation/create', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      })
+      const data = await response.json()
+      
+      if (data.success) {
+        setConversationId(data.conversation_id)
+        setConversationHistory({})
+      }
+    } catch (error) {
+      console.error('Error al crear conversación:', error)
+    }
+  }
+
+  const loadConversationHistory = async (convId) => {
+    try {
+      const response = await fetch(`http://localhost:5000/api/conversation/${convId}/history`)
+      const data = await response.json()
+      
+      if (data.success) {
+        setConversationHistory(data.messages_by_llm)
+        setConversationId(convId)
+      }
+    } catch (error) {
+      console.error('Error al cargar historial:', error)
+    }
+  }
+
   const handleSubmit = async () => {
     if (!prompt.trim()) return
     
@@ -83,7 +120,7 @@ function App() {
     })))
 
     try {
-      // Llamar al endpoint de simulación del backend
+      // Llamar al endpoint de simulación del backend con conversation_id
       const response = await fetch('http://localhost:5000/api/llm/simulate', {
         method: 'POST',
         headers: {
@@ -91,7 +128,8 @@ function App() {
         },
         body: JSON.stringify({
           prompt: prompt,
-          llm_ids: availableLlms.map(llm => llm.id)
+          llm_ids: availableLlms.map(llm => llm.id),
+          conversation_id: conversationId
         })
       })
 
@@ -103,6 +141,14 @@ function App() {
           const result = data.results.find(r => r.id === llm.id)
           return result ? { ...llm, ...result } : llm
         }))
+        
+        // Actualizar conversation_id si se creó una nueva
+        if (data.conversation_id && data.conversation_id !== conversationId) {
+          setConversationId(data.conversation_id)
+        }
+        
+        // Limpiar el prompt después de enviarlo
+        setPrompt('')
       } else {
         // Manejar error
         setLlmResponses(prev => prev.map(llm => ({
@@ -158,10 +204,19 @@ function App() {
         <div className="max-w-4xl mx-auto mb-8">
           <Card className="shadow-lg">
             <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Send className="w-5 h-5" />
-                Escribe tu prompt
-              </CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2">
+                  <Send className="w-5 h-5" />
+                  Escribe tu prompt
+                </CardTitle>
+                {conversationId && (
+                  <div className="flex items-center gap-2 text-sm text-slate-500">
+                    <MessageSquare className="w-4 h-4" />
+                    <span className="font-mono">{conversationId.slice(0, 8)}...</span>
+                    <span className="text-green-600">✓ Con memoria</span>
+                  </div>
+                )}
+              </div>
             </CardHeader>
             <CardContent className="space-y-4">
               <Textarea
@@ -170,27 +225,47 @@ function App() {
                 onChange={(e) => setPrompt(e.target.value)}
                 className="min-h-[120px] resize-none"
               />
-              <div className="flex justify-between items-center">
-                <Button
-                  variant="outline"
-                  onClick={() => {/* Abrir configuración */}}
-                  className="flex items-center gap-2"
-                >
-                  <Settings className="w-4 h-4" />
-                  Configurar LLMs
-                </Button>
-                <Button
-                  onClick={handleSubmit}
-                  disabled={!prompt.trim() || isLoading}
-                  className="flex items-center gap-2 px-6"
-                >
-                  {isLoading ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Send className="w-4 h-4" />
-                  )}
-                  Enviar a todos los LLMs
-                </Button>
+              <div className="flex justify-between items-center gap-4">
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={createNewConversation}
+                    className="flex items-center gap-2"
+                  >
+                    <MessageSquare className="w-4 h-4" />
+                    Nueva Conversación
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => setShowHistory(!showHistory)}
+                    className="flex items-center gap-2"
+                  >
+                    <History className="w-4 h-4" />
+                    {showHistory ? 'Ocultar' : 'Ver'} Historial
+                  </Button>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => {/* Abrir configuración */}}
+                    className="flex items-center gap-2"
+                  >
+                    <Settings className="w-4 h-4" />
+                    Configurar LLMs
+                  </Button>
+                  <Button
+                    onClick={handleSubmit}
+                    disabled={!prompt.trim() || isLoading}
+                    className="flex items-center gap-2 px-6"
+                  >
+                    {isLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Send className="w-4 h-4" />
+                    )}
+                    Enviar a todos los LLMs
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -223,7 +298,11 @@ function App() {
                       <p className="text-slate-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap">
                         {llm.response}
                       </p>
-                      <div className="flex justify-end pt-2 border-t">
+                      <div className="flex justify-between items-center pt-2 border-t">
+                        <div className="flex items-center gap-2 text-xs text-slate-400">
+                          <MessageSquare className="w-3 h-3" />
+                          Memoria activa
+                        </div>
                         <Button
                           variant="outline"
                           size="sm"
@@ -247,8 +326,20 @@ function App() {
         </div>
 
         {/* Footer */}
-        <div className="text-center mt-12 text-slate-500 dark:text-slate-400">
-          <p>Prototipo de aplicación Multi-LLM - Desarrollado con React y Flask</p>
+        <div className="text-center mt-12 space-y-4">
+          <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-4 max-w-4xl mx-auto">
+            <h3 className="text-lg font-semibold text-blue-800 dark:text-blue-200 mb-2">
+              💡 Funcionalidad de Memoria
+            </h3>
+            <p className="text-blue-700 dark:text-blue-300 text-sm">
+              Cada LLM mantiene memoria de la conversación. Puedes decir tu nombre, preferencias, o cualquier información personal 
+              y todos los modelos lo recordarán durante toda la sesión. Prueba diciendo "Me llamo [tu nombre]" y verás como 
+              los LLMs te reconocen en mensajes futuros.
+            </p>
+          </div>
+          <p className="text-slate-500 dark:text-slate-400">
+            Prototipo de aplicación Multi-LLM con memoria - Desarrollado con React y Flask
+          </p>
         </div>
       </div>
     </div>

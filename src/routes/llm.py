@@ -5,6 +5,10 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 import time
+from src.models.user import db
+from src.models.conversation import Conversation, ConversationMessage, LLMMemory
+import uuid
+import re
 
 llm_bp = Blueprint('llm', __name__)
 
@@ -174,46 +178,135 @@ def query_llms():
 
 @llm_bp.route('/simulate', methods=['POST'])
 def simulate_llms():
-    """Endpoint para simular respuestas de LLMs (para desarrollo/demo)"""
+    """Endpoint para simular respuestas de LLMs con memoria (para desarrollo/demo)"""
     try:
         data = request.get_json()
         prompt = data.get('prompt', '')
-        llm_ids = data.get('llm_ids', ['openai', 'gemini', 'claude', 'llama'])
+        llm_ids = data.get('llm_ids', ['zai', 'gemini', 'mistral', 'llama'])
+        conversation_id = data.get('conversation_id')
         
         if not prompt:
             return jsonify({'error': 'Prompt es requerido'}), 400
         
-        # Simular respuestas con diferentes tiempos de respuesta
+        # Si no hay conversation_id, crear una nueva conversación
+        if not conversation_id:
+            conversation_id = str(uuid.uuid4())
+            conversation = Conversation(id=conversation_id)
+            db.session.add(conversation)
+            db.session.commit()
+        else:
+            conversation = Conversation.query.get(conversation_id)
+            if not conversation:
+                return jsonify({'error': 'Conversación no encontrada'}), 404
+        
+        # Guardar el mensaje del usuario para todos los LLMs
+        for llm_id in llm_ids:
+            if llm_id in LLM_CONFIGS:
+                llm_name = LLM_CONFIGS[llm_id]['name']
+            else:
+                llm_name = 'Meta Llama' if llm_id == 'llama' else llm_id.title()
+            
+            user_message = ConversationMessage(
+                conversation_id=conversation_id,
+                llm_id=llm_id,
+                llm_name=llm_name,
+                role='user',
+                content=prompt
+            )
+            db.session.add(user_message)
+        
+        # Extraer información de memoria del prompt del usuario
+        extracted_memory = extract_memory_from_text(prompt)
+        
+        # Actualizar memoria para todos los LLMs
+        for llm_id in llm_ids:
+            for key, value in extracted_memory.items():
+                existing_memory = LLMMemory.query.filter_by(
+                    conversation_id=conversation_id,
+                    llm_id=llm_id,
+                    memory_key=key
+                ).first()
+                
+                if existing_memory:
+                    existing_memory.memory_value = value
+                else:
+                    new_memory = LLMMemory(
+                        conversation_id=conversation_id,
+                        llm_id=llm_id,
+                        memory_key=key,
+                        memory_value=value
+                    )
+                    db.session.add(new_memory)
+        
+        # Simular respuestas con memoria
         results = []
         for llm_id in llm_ids:
             if llm_id in LLM_CONFIGS:
                 config = LLM_CONFIGS[llm_id]
+                llm_name = config['name']
             else:
-                # Para LLMs no configurados como Meta Llama
-                config = {'name': 'Meta Llama' if llm_id == 'llama' else llm_id.title()}
+                llm_name = 'Meta Llama' if llm_id == 'llama' else llm_id.title()
+            
+            # Obtener memoria del LLM
+            memories = LLMMemory.query.filter_by(
+                conversation_id=conversation_id,
+                llm_id=llm_id
+            ).all()
+            
+            memory_context = ""
+            for memory in memories:
+                if memory.memory_key == 'user_name':
+                    memory_context += f"Recuerda que el usuario se llama {memory.memory_value}. "
+                elif memory.memory_key == 'preferences':
+                    memory_context += f"Recuerda estas preferencias del usuario: {memory.memory_value}. "
+            
+            # Obtener historial de mensajes para este LLM
+            previous_messages = ConversationMessage.query.filter_by(
+                conversation_id=conversation_id,
+                llm_id=llm_id
+            ).order_by(ConversationMessage.timestamp.asc()).all()
+            
+            context_from_history = ""
+            if len(previous_messages) > 1:  # Más de 1 mensaje (excluyendo el actual)
+                context_from_history = "\n\nContexto de conversación previa:\n"
+                for msg in previous_messages[:-1]:  # Excluir el último mensaje (actual)
+                    context_from_history += f"{msg.role}: {msg.content}\n"
             
             # Simular tiempo de respuesta
-            time.sleep(0.1)  # Pequeña pausa para simular procesamiento
+            time.sleep(0.1)
             
-            response_text = f"""Esta es una respuesta simulada de {config['name']} para el prompt: "{prompt}".
-
-En una implementación real, aquí aparecería la respuesta real del modelo de IA. Cada LLM tiene su propio estilo y enfoque para responder preguntas, lo que hace que la comparación sea muy útil para obtener diferentes perspectivas sobre el mismo tema.
-
-{config['name']} se caracteriza por [características específicas del modelo que se mostrarían aquí en la implementación real]."""
+            # Generar respuesta personalizada con memoria
+            response_text = generate_memory_aware_response(
+                llm_name, prompt, memory_context, context_from_history
+            )
+            
+            # Guardar la respuesta del LLM
+            assistant_message = ConversationMessage(
+                conversation_id=conversation_id,
+                llm_id=llm_id,
+                llm_name=llm_name,
+                role='assistant',
+                content=response_text
+            )
+            db.session.add(assistant_message)
             
             results.append({
                 'id': llm_id,
-                'name': config['name'],
+                'name': llm_name,
                 'status': 'completed',
                 'response': response_text
             })
         
+        db.session.commit()
+        
         return jsonify({
             'success': True,
-            'results': results
+            'results': results,
+            'conversation_id': conversation_id
         })
         
     except Exception as e:
+        db.session.rollback()
         return jsonify({'error': f'Error interno del servidor: {str(e)}'}), 500
 
 @llm_bp.route('/available', methods=['GET'])
@@ -236,3 +329,112 @@ def get_available_llms():
         'success': True,
         'llms': llms
     })
+
+def extract_memory_from_text(text):
+    """Extraer información de memoria del texto"""
+    memory = {}
+    text_lower = text.lower()
+    
+    # Buscar nombres mencionados
+    name_patterns = [
+        r"mi nombre es (\w+)",
+        r"me llamo (\w+)",
+        r"soy (\w+)",
+        r"puedes llamarme (\w+)",
+        r"mi nombre:\s*(\w+)",
+        r"nombre:\s*(\w+)"
+    ]
+    
+    for pattern in name_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            memory['user_name'] = match.group(1).capitalize()
+            break
+    
+    # Buscar preferencias mencionadas
+    preference_indicators = ["prefiero", "me gusta", "no me gusta", "odio", "amo"]
+    for indicator in preference_indicators:
+        if indicator in text_lower:
+            sentences = text.split('.')
+            for sentence in sentences:
+                if indicator in sentence.lower():
+                    memory['preferences'] = sentence.strip()
+                    break
+            break
+    
+    # Buscar información personal adicional
+    if "trabajo" in text_lower or "profesión" in text_lower:
+        memory['profession'] = text  # Simplificado
+    
+    return memory
+
+def generate_memory_aware_response(llm_name, prompt, memory_context, conversation_context):
+    """Generar una respuesta simulada que tenga en cuenta la memoria y el contexto"""
+    
+    # Respuestas base personalizadas por LLM
+    base_responses = {
+        'Z.AI GLM-4.5-Flash': "Como Z.AI, procesando tu consulta con mi arquitectura GLM-4.5-Flash...",
+        'Google Gemini 2.0 Flash': "Gemini aquí. Utilizando mi capacidad multimodal para analizar tu pregunta...",
+        'Mistral AI': "Mistral respondiendo. Con mi enfoque en la eficiencia y precisión...",
+        'Meta Llama': "Llama procesando. Aplicando mi entrenamiento en conversaciones naturales..."
+    }
+    
+    # Extraer nombre de usuario si está en la memoria
+    user_name = None
+    if "se llama" in memory_context:
+        name_match = re.search(r"se llama (\w+)", memory_context)
+        if name_match:
+            user_name = name_match.group(1)
+    
+    # Respuesta personalizada
+    response = base_responses.get(llm_name, f"{llm_name} respondiendo...")
+    
+    # Responder al prompt específico con contexto de memoria
+    prompt_lower = prompt.lower()
+    
+    if "hola" in prompt_lower or "buenas" in prompt_lower:
+        if user_name and "me llamo" not in prompt_lower:
+            response += f"\n\n¡Hola de nuevo, {user_name}! Me alegra verte por aquí."
+        elif "me llamo" in prompt_lower:
+            # Extraer el nombre del prompt actual
+            name_match = re.search(r"me llamo (\w+)", prompt_lower)
+            if name_match:
+                current_name = name_match.group(1).capitalize()
+                response += f"\n\n¡Hola {current_name}! Es un placer conocerte. Recordaré tu nombre para futuras conversaciones."
+        else:
+            response += "\n\n¡Hola! Es un placer conocerte. ¿Cómo te llamas?"
+    
+    elif "cómo" in prompt_lower and ("está" in prompt_lower or "estas" in prompt_lower):
+        if user_name:
+            response += f"\n\n¡Muy bien, gracias por preguntar, {user_name}! Es genial poder continuar nuestra conversación."
+        else:
+            response += "\n\n¡Muy bien, gracias! ¿Cómo estás tú?"
+    
+    elif "qué" in prompt_lower and "tiempo" in prompt_lower:
+        response += "\n\nNo tengo acceso a información meteorológica en tiempo real, pero puedo ayudarte con información general sobre el clima o sugerirte recursos confiables para consultar el pronóstico."
+        if user_name:
+            response += f" ¿Hay algo específico sobre el tiempo que te gustaría saber, {user_name}?"
+    
+    else:
+        # Respuesta genérica pero personalizada
+        if user_name:
+            response += f"\n\n{user_name}, he analizado tu consulta '{prompt}' y puedo ofrecerte una perspectiva detallada utilizando las capacidades específicas de {llm_name}."
+        else:
+            response += f"\n\nHe analizado tu pregunta '{prompt}' y puedo ofrecerte una perspectiva detallada utilizando las capacidades específicas de {llm_name}."
+    
+    # Agregar características específicas del LLM
+    llm_characteristics = {
+        'Z.AI GLM-4.5-Flash': "Mi fortaleza está en el procesamiento rápido y eficiente de consultas complejas.",
+        'Google Gemini 2.0 Flash': "Puedo procesar tanto texto como imágenes para darte respuestas más completas.",
+        'Mistral AI': "Me especializo en respuestas precisas y bien estructuradas.",
+        'Meta Llama': "Mi enfoque está en conversaciones naturales y comprensión contextual profunda."
+    }
+    
+    if llm_name in llm_characteristics:
+        response += f"\n\n{llm_characteristics[llm_name]}"
+    
+    # Agregar contexto de conversación si existe
+    if conversation_context and not ("hola" in prompt_lower and "me llamo" in prompt_lower):
+        response += "\n\nBasándome en nuestra conversación anterior, puedo mantener la continuidad en nuestro diálogo y adaptar mis respuestas a tus necesidades específicas."
+    
+    return response
